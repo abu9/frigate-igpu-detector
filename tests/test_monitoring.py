@@ -1,4 +1,5 @@
 import json
+import threading
 import urllib.error
 import urllib.request
 
@@ -53,6 +54,29 @@ def test_snapshot_state():
     assert "gpu_busy_percent" in snapshot["live"]
 
 
+def test_cpu_samples_are_smoothed():
+    state = RuntimeState("ncnn-vulkan", "ncnn-vulkan", False)
+    state._record_cpu_sample(0.01)
+    state._record_cpu_sample(0.02)
+    snapshot = state.snapshot()
+    assert snapshot["live"]["cpu_cores"] == 0.015
+    assert snapshot["live"]["cpu_percent"] == 1.5
+
+
+def test_start_failure_does_not_hang_stop(monkeypatch):
+    state = RuntimeState("ncnn-vulkan", "ncnn-vulkan", False)
+    server = StatusHTTPServer(("127.0.0.1", 0), state)
+
+    def fail_start(_thread):
+        raise RuntimeError("cannot start thread")
+
+    monkeypatch.setattr(threading.Thread, "start", fail_start)
+    with pytest.raises(RuntimeError):
+        server.start()
+    assert server._thread is None
+    server.stop()
+
+
 def test_status_http_endpoint():
     state = RuntimeState("ncnn-vulkan", "ncnn-vulkan", False)
     state.set_model("model.onnx", False, True)
@@ -65,6 +89,11 @@ def test_status_http_endpoint():
             payload = json.loads(response.read())
         assert payload["model"]["loaded"] is False
         assert "inference" in payload
+
+        with urllib.request.urlopen(base + "/", timeout=5) as response:
+            assert response.status == 200
+            root_payload = json.loads(response.read())
+        assert root_payload["version"] == payload["version"]
 
         with pytest.raises(urllib.error.HTTPError) as excinfo:
             urllib.request.urlopen(base + "/status?require_model=1", timeout=5)

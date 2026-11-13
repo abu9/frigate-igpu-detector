@@ -3,6 +3,20 @@
 All notable changes to this project are documented here. The format loosely follows
 [Keep a Changelog](https://keepachangelog.com/), and the project uses semantic versioning.
 
+## [0.2.0] - 2026-11-13
+
+### Added
+
+- Optional read-only HTTP `/status` endpoint (`FRIGATE_ZMQ_STATUS_BIND`) with backend/model
+  state, process CPU percentage, GPU busy percentage, cgroup/RSS memory, and inference latency
+  (last, p50, p95 over the last 300 successful requests).
+- `?require_model=1` returns HTTP 503 until a model is loaded.
+- Uptime Kuma / monitoring documentation and configuration examples.
+
+### Changed
+
+- The status endpoint is disabled unless `FRIGATE_ZMQ_STATUS_BIND` is set.
+
 ## [0.1.2] - 2026-11-13
 
 ### Fixed

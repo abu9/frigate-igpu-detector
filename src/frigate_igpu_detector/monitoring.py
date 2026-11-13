@@ -97,6 +97,7 @@ class RuntimeState:
         self._model_available = False
         self._cpu_cores: float | None = None
         self._cpu_percent: float | None = None
+        self._cpu_samples: deque[float] = deque(maxlen=5)
         self._requests_total = 0
         self._errors_total = 0
         self._rejected_total = 0
@@ -125,12 +126,16 @@ class RuntimeState:
             now_wall = time.monotonic()
             delta_wall = now_wall - last_wall
             if delta_wall > 0:
-                cores = (now_cpu - last_cpu) / delta_wall
-                with self._lock:
-                    self._cpu_cores = round(cores, 3)
-                    self._cpu_percent = round(cores * 100.0, 1)
+                self._record_cpu_sample((now_cpu - last_cpu) / delta_wall)
             last_cpu = now_cpu
             last_wall = now_wall
+
+    def _record_cpu_sample(self, cores: float) -> None:
+        with self._lock:
+            self._cpu_samples.append(cores)
+            average = sum(self._cpu_samples) / len(self._cpu_samples)
+            self._cpu_cores = round(average, 4)
+            self._cpu_percent = round(average * 100.0, 2)
 
     def set_backend(self, configured: str, active: str, fallback: bool) -> None:
         with self._lock:
@@ -219,7 +224,7 @@ class _StatusHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         parsed = urlsplit(self.path)
-        if parsed.path != "/status":
+        if parsed.path not in ("/", "/status", "/status/"):
             self._send_json(404, {"error": "not found"})
             return
         snapshot = self.server.state.snapshot()  # type: ignore[attr-defined]
@@ -255,18 +260,22 @@ class StatusHTTPServer(ThreadingHTTPServer):
         return int(self.server_address[1])
 
     def start(self) -> None:
-        self._thread = threading.Thread(
+        thread = threading.Thread(
             target=self.serve_forever,
             kwargs={"poll_interval": 0.2},
             name="fzd-status-http",
             daemon=True,
         )
-        self._thread.start()
+        # Assign only after start() succeeds. If thread creation fails, stop()
+        # must not call shutdown() and wait for serve_forever() that never ran.
+        thread.start()
+        self._thread = thread
 
     def stop(self) -> None:
-        if self._thread is not None:
+        thread = self._thread
+        if thread is not None:
             self.shutdown()
         self.server_close()
-        if self._thread is not None:
-            self._thread.join(timeout=2)
+        if thread is not None:
+            thread.join(timeout=2)
             self._thread = None

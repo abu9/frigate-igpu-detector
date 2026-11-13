@@ -775,10 +775,24 @@ class FrigateZMQServer:
             raise ValueError(f"Unsafe or unsupported model filename: {name!r}")
         return name
 
+    def _sync_model_state(self, name: str, available: bool) -> None:
+        """Reflect the model that is actually serving requests in RuntimeState."""
+        if self.model is not None:
+            self.state.set_model(self.model.name, True, available)
+            self.state.set_backend(
+                self.backend_requested,
+                self.model.backend,
+                self.model.backend != self.backend_requested,
+            )
+        else:
+            self.state.set_model(name, False, available)
+
     def _load_cached_model(self, name: str) -> bool:
         path = MODEL_DIR / name
         if not path.is_file():
-            self.state.set_model(name, False, False)
+            # Keep the old model visible: a missing new model does not stop an
+            # already-loaded model from serving inference.
+            self._sync_model_state(name, available=False)
             return False
         # Only quarantine the file when it is structurally not a readable ONNX.
         # Backend failures (missing OpenVINO, missing pnnx, GPU unavailable) are
@@ -788,11 +802,11 @@ class FrigateZMQServer:
         except Exception:
             LOG.exception("Cached model is not a readable ONNX: %s", path)
             self._quarantine(path)
-            self.state.set_model(name, False, False)
+            self._sync_model_state(name, available=False)
             return False
         try:
             self.model = self._build_model(name, path)
-            self.state.set_model(name, True, True)
+            self._sync_model_state(name, available=True)
             return True
         except BackendUnavailable:
             # No inference backend at all is fatal; do not pretend to be healthy
@@ -881,7 +895,7 @@ class FrigateZMQServer:
             os.replace(temp, target)
             candidate.path = target
             self.model = candidate
-            self.state.set_model(name, True, True)
+            self._sync_model_state(name, available=True)
             LOG.info(
                 "Model transfer complete: %s bytes=%d sha256=%s",
                 name,
@@ -895,11 +909,7 @@ class FrigateZMQServer:
                 temp.unlink(missing_ok=True)
             except OSError:
                 LOG.exception("Failed to remove temporary model %s", temp)
-            self.state.set_model(
-                self.model.name if self.model is not None else name,
-                self.model is not None,
-                target.is_file(),
-            )
+            self._sync_model_state(name, available=target.is_file())
             self._send_json(
                 {"model_saved": False, "model_loaded": False, "error": str(exc)[:300]}
             )
@@ -952,9 +962,10 @@ class FrigateZMQServer:
             tensor = np.frombuffer(frames[1], dtype=dtype).reshape(shape)
             infer_start = time.perf_counter()
             result = self.model.infer(tensor)
-            self.state.record_inference((time.perf_counter() - infer_start) * 1000.0)
+            elapsed_ms = (time.perf_counter() - infer_start) * 1000.0
             if result.shape != (20, 6) or result.dtype != np.float32:
                 raise ValueError(f"Postprocessor returned invalid result {result.shape}/{result.dtype}")
+            self.state.record_inference(elapsed_ms)
             meta = {"shape": [20, 6], "dtype": "float32"}
             self.socket.send_multipart(
                 [json.dumps(meta, separators=(",", ":")).encode("utf-8"), result.tobytes(order="C")]

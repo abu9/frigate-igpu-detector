@@ -239,6 +239,8 @@ Then:
 
 ```bash
 curl -s http://127.0.0.1:9180/status | python3 -m json.tool
+# `/` returns the same JSON, for quick browser checks.
+curl -s http://127.0.0.1:9180/ | python3 -m json.tool
 ```
 
 The response contains backend/model state, live CPU/GPU/memory, and inference latency:

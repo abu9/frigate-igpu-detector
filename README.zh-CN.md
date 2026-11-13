@@ -230,6 +230,8 @@ Environment=FRIGATE_ZMQ_STATUS_BIND=0.0.0.0:9180
 
 ```bash
 curl -s http://127.0.0.1:9180/status | python3 -m json.tool
+# `/` 返回同样的 JSON，便于浏览器直接查看。
+curl -s http://127.0.0.1:9180/ | python3 -m json.tool
 ```
 
 返回内容包括后端/模型状态、CPU/GPU/内存占用和推理延迟：
