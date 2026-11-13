@@ -22,6 +22,8 @@ Environment=FRIGATE_ZMQ_CPU_THREADS=6
 Environment=FRIGATE_ZMQ_LOG_LEVEL=INFO
 Environment=HOME=/var/lib/frigate-detector
 Environment=XDG_CACHE_HOME=/var/lib/frigate-detector/.cache
+# Optional read-only monitoring endpoint:
+# Environment=FRIGATE_ZMQ_STATUS_BIND=0.0.0.0:9180
 
 # Adjust to your installation (venv or system-wide `fzd`).
 # Fails before binding the port when neither ncnn nor OpenVINO is usable.

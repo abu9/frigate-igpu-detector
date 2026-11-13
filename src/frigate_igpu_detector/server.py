@@ -37,6 +37,7 @@ import numpy as np
 import zmq
 
 from . import __version__
+from .monitoring import RuntimeState, StatusHTTPServer, parse_status_bind
 
 LOG = logging.getLogger("frigate_igpu_detector")
 
@@ -56,6 +57,7 @@ def _env_int(name: str, default: int, minimum: int = 1) -> int:
 
 MODEL_DIR = Path(os.environ.get("FRIGATE_ZMQ_MODEL_DIR", "/var/lib/frigate-detector/models"))
 BIND = os.environ.get("FRIGATE_ZMQ_BIND", "tcp://0.0.0.0:5555")
+STATUS_BIND = os.environ.get("FRIGATE_ZMQ_STATUS_BIND", "").strip()
 BACKEND = os.environ.get("FRIGATE_ZMQ_BACKEND", "openvino").strip().lower()
 CPU_THREADS = _env_int("FRIGATE_ZMQ_CPU_THREADS", 4)
 NCNN_THREADS = _env_int("FRIGATE_ZMQ_NCNN_THREADS", 1)
@@ -643,6 +645,12 @@ class FrigateZMQServer:
         self._ncnn_failed: set[str] = set()
         self._last_reject = ""
         self._last_reject_at = 0.0
+        self.state = RuntimeState(
+            configured_backend=self.backend_requested,
+            active_backend=self.backend,
+            fallback=bool(self.backend_fallback_reason),
+        )
+        self.status_server: StatusHTTPServer | None = None
         self.context = zmq.Context.instance()
         self.socket = self.context.socket(zmq.REP)
         self.socket.setsockopt(zmq.LINGER, 0)
@@ -659,6 +667,26 @@ class FrigateZMQServer:
         except BackendUnavailable:
             self.socket.close(linger=0)
             raise
+        if STATUS_BIND:
+            try:
+                bind = parse_status_bind(STATUS_BIND)
+                if bind is not None:
+                    status_server = StatusHTTPServer(bind, self.state)
+                    try:
+                        status_server.start()
+                        self.state.start()
+                    except Exception:
+                        status_server.stop()
+                        raise
+                    self.status_server = status_server
+                    LOG.info(
+                        "Status endpoint listening on http://%s:%d/status",
+                        bind[0],
+                        bind[1],
+                    )
+            except Exception as exc:
+                LOG.warning("Status endpoint disabled: %s", exc)
+                self.status_server = None
 
     def _get_core(self) -> Any:
         if self.core is None:
@@ -750,6 +778,7 @@ class FrigateZMQServer:
     def _load_cached_model(self, name: str) -> bool:
         path = MODEL_DIR / name
         if not path.is_file():
+            self.state.set_model(name, False, False)
             return False
         # Only quarantine the file when it is structurally not a readable ONNX.
         # Backend failures (missing OpenVINO, missing pnnx, GPU unavailable) are
@@ -759,20 +788,24 @@ class FrigateZMQServer:
         except Exception:
             LOG.exception("Cached model is not a readable ONNX: %s", path)
             self._quarantine(path)
+            self.state.set_model(name, False, False)
             return False
         try:
             self.model = self._build_model(name, path)
+            self.state.set_model(name, True, True)
             return True
         except BackendUnavailable:
             # No inference backend at all is fatal; do not pretend to be healthy
             # and answer inference requests with zeros.
             self.model = None
+            self.state.set_model(name, False, True)
             raise
         except Exception:
             LOG.exception(
                 "Failed to load cached model %s (backend error); leaving the file in place", path
             )
             self.model = None
+            self.state.set_model(name, False, True)
             return False
 
     @staticmethod
@@ -800,6 +833,12 @@ class FrigateZMQServer:
             if self._load_cached_model(path.name):
                 LOG.info("Auto-loaded cached model at startup: %s", path.name)
                 return
+        remaining = [path for path in candidates if path.is_file()]
+        self.state.set_model(
+            remaining[0].name if remaining else None,
+            False,
+            bool(remaining),
+        )
         LOG.info("No cached model in %s; waiting for Frigate model transfer", MODEL_DIR)
 
     def _send_json(self, data: dict[str, Any]) -> None:
@@ -842,6 +881,7 @@ class FrigateZMQServer:
             os.replace(temp, target)
             candidate.path = target
             self.model = candidate
+            self.state.set_model(name, True, True)
             LOG.info(
                 "Model transfer complete: %s bytes=%d sha256=%s",
                 name,
@@ -855,11 +895,17 @@ class FrigateZMQServer:
                 temp.unlink(missing_ok=True)
             except OSError:
                 LOG.exception("Failed to remove temporary model %s", temp)
+            self.state.set_model(
+                self.model.name if self.model is not None else name,
+                self.model is not None,
+                target.is_file(),
+            )
             self._send_json(
                 {"model_saved": False, "model_loaded": False, "error": str(exc)[:300]}
             )
 
     def _send_zero_result(self, message: str) -> None:
+        self.state.record_rejected()
         now = time.monotonic()
         if message != self._last_reject or now - self._last_reject_at > 5.0:
             LOG.error("Inference request rejected: %s", message)
@@ -872,6 +918,7 @@ class FrigateZMQServer:
         )
 
     def _handle_inference(self, frames: list[bytes], header: dict[str, Any]) -> None:
+        self.state.record_request()
         if len(frames) != 2:
             self._send_zero_result(f"expected 2 frames, received {len(frames)}")
             return
@@ -903,7 +950,9 @@ class FrigateZMQServer:
                     f"received {len(frames[1])}"
                 )
             tensor = np.frombuffer(frames[1], dtype=dtype).reshape(shape)
+            infer_start = time.perf_counter()
             result = self.model.infer(tensor)
+            self.state.record_inference((time.perf_counter() - infer_start) * 1000.0)
             if result.shape != (20, 6) or result.dtype != np.float32:
                 raise ValueError(f"Postprocessor returned invalid result {result.shape}/{result.dtype}")
             meta = {"shape": [20, 6], "dtype": "float32"}
@@ -911,6 +960,7 @@ class FrigateZMQServer:
                 [json.dumps(meta, separators=(",", ":")).encode("utf-8"), result.tobytes(order="C")]
             )
         except Exception as exc:
+            self.state.record_error()
             LOG.exception("Inference/postprocess failed (backend=%s)", self.backend)
             self._send_zero_result(str(exc))
 
@@ -954,8 +1004,16 @@ class FrigateZMQServer:
 
     def close(self) -> None:
         try:
-            self.socket.close(linger=0)
+            if self.status_server is not None:
+                try:
+                    self.status_server.stop()
+                except Exception:
+                    LOG.exception("Could not stop the status endpoint")
+                self.status_server = None
+            if self.state is not None:
+                self.state.stop()
         finally:
+            self.socket.close(linger=0)
             # ncnn requires every Net to be destroyed before the Vulkan instance.
             self.model = None
             gc.collect()

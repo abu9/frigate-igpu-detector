@@ -44,6 +44,21 @@ def test_vulkan_failure_falls_back_to_openvino(monkeypatch, tmp_path):
         instance.close()
 
 
+def test_invalid_status_bind_does_not_abort_server(monkeypatch, tmp_path):
+    monkeypatch.setattr(server, "MODEL_DIR", tmp_path)
+    monkeypatch.setattr(server, "BIND", "tcp://127.0.0.1:0")
+    monkeypatch.setattr(server, "BACKEND", "openvino")
+    monkeypatch.setattr(server, "STATUS_BIND", "not-a-valid-bind")
+    monkeypatch.setattr(server.FrigateZMQServer, "_get_core", lambda self: object())
+
+    instance = server.FrigateZMQServer()
+    try:
+        assert instance.backend == "openvino"
+        assert instance.status_server is None
+    finally:
+        instance.close()
+
+
 def test_backend_failure_returns_nonzero_from_main(monkeypatch):
     monkeypatch.setattr(
         server, "FrigateZMQServer", _raise(server.BackendUnavailable("no backend"))
