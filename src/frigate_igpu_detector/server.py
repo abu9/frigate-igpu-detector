@@ -39,19 +39,38 @@ import zmq
 from . import __version__
 
 LOG = logging.getLogger("frigate_igpu_detector")
+
+
+def _env_int(name: str, default: int, minimum: int = 1) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be an integer, got {raw!r}") from exc
+    if value < minimum:
+        raise RuntimeError(f"{name} must be >= {minimum}, got {value}")
+    return value
+
+
 MODEL_DIR = Path(os.environ.get("FRIGATE_ZMQ_MODEL_DIR", "/var/lib/frigate-detector/models"))
 BIND = os.environ.get("FRIGATE_ZMQ_BIND", "tcp://0.0.0.0:5555")
 BACKEND = os.environ.get("FRIGATE_ZMQ_BACKEND", "openvino").strip().lower()
-CPU_THREADS = max(1, int(os.environ.get("FRIGATE_ZMQ_CPU_THREADS", "4")))
-NCNN_THREADS = max(1, int(os.environ.get("FRIGATE_ZMQ_NCNN_THREADS", "1")))
-GPU_INDEX = int(os.environ.get("FRIGATE_ZMQ_GPU_INDEX", "-1"))
+CPU_THREADS = _env_int("FRIGATE_ZMQ_CPU_THREADS", 4)
+NCNN_THREADS = _env_int("FRIGATE_ZMQ_NCNN_THREADS", 1)
+GPU_INDEX = _env_int("FRIGATE_ZMQ_GPU_INDEX", -1, minimum=-1)
 NCNN_CACHE_DIR = MODEL_DIR / "ncnn"
-MAX_MODEL_BYTES = max(1, int(os.environ.get("FRIGATE_ZMQ_MAX_MODEL_MB", "512"))) * 1024 * 1024
+MAX_MODEL_BYTES = _env_int("FRIGATE_ZMQ_MAX_MODEL_MB", 512) * 1024 * 1024
 MAX_TENSOR_BYTES = 128 * 1024 * 1024
 CONF_THRESHOLD = 0.4
 NMS_THRESHOLD = 0.4
 MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+\.onnx$")
 KNOWN_BACKENDS = ("openvino", "ncnn-vulkan")
+
+
+class BackendUnavailable(RuntimeError):
+    """No inference backend can be initialised."""
 
 
 # ---------------------------------------------------------------------------
@@ -590,16 +609,35 @@ class FrigateZMQServer:
             )
         MODEL_DIR.mkdir(parents=True, exist_ok=True)
         self.core: Any = None
+        self.backend_requested = BACKEND
         self.backend = BACKEND
+        self.backend_fallback_reason = ""
         self.gpu_ready = False
+        self.gpu_instance_created = False
         self.gpu_index = -1
         if self.backend == "ncnn-vulkan":
             try:
                 self._init_vulkan()
-            except Exception:
-                LOG.exception("Vulkan/GPU initialisation failed; falling back to OpenVINO CPU")
+            except Exception as exc:
+                self.backend_fallback_reason = f"{type(exc).__name__}: {exc}"
+                LOG.warning(
+                    "Vulkan/GPU initialisation failed; falling back to OpenVINO CPU: %s",
+                    self.backend_fallback_reason,
+                )
+                LOG.debug("Vulkan initialisation traceback", exc_info=True)
                 self.backend = "openvino"
         if self.backend == "openvino":
+            try:
+                self._get_core()
+            except BackendUnavailable as exc:
+                detail = (
+                    f"ncnn-vulkan: {self.backend_fallback_reason}"
+                    if self.backend_fallback_reason
+                    else f"ncnn-vulkan: not requested (FRIGATE_ZMQ_BACKEND={self.backend_requested})"
+                )
+                raise BackendUnavailable(
+                    f"no usable inference backend ({detail}; openvino: {exc})"
+                ) from exc
             LOG.info("Inference backend: OpenVINO CPU, threads=%d", CPU_THREADS)
         self.model: OpenVINOModel | NcnnVulkanModel | None = None
         self._ncnn_failed: set[str] = set()
@@ -616,20 +654,29 @@ class FrigateZMQServer:
         self.socket.bind(BIND)
         LOG.info("Frigate ZMQ server %s listening on %s", __version__, BIND)
         LOG.info("Model cache directory: %s", MODEL_DIR)
-        self._autoload_cached_model()
+        try:
+            self._autoload_cached_model()
+        except BackendUnavailable:
+            self.socket.close(linger=0)
+            raise
 
     def _get_core(self) -> Any:
         if self.core is None:
             try:
                 import openvino as ov
             except ImportError as exc:
-                raise RuntimeError(
-                    "The OpenVINO backend requires the optional dependency; install it with "
-                    "`pip install 'frigate-igpu-detector[openvino]'`"
+                raise BackendUnavailable(
+                    "the optional OpenVINO dependency is not importable; install it with "
+                    "`pip install 'frigate-igpu-detector[openvino]'` or use a venv that includes "
+                    "the system packages"
                 ) from exc
-            core = ov.Core()
-            if "CPU" not in core.available_devices:
-                raise RuntimeError(f"OpenVINO CPU plugin unavailable: {core.available_devices}")
+            try:
+                core = ov.Core()
+                available = list(core.available_devices)
+            except Exception as exc:
+                raise BackendUnavailable(f"OpenVINO initialisation failed: {exc}") from exc
+            if "CPU" not in available:
+                raise BackendUnavailable(f"OpenVINO CPU plugin unavailable: {available}")
             self.core = core
         return self.core
 
@@ -647,14 +694,20 @@ class FrigateZMQServer:
             )
         _cleanup_stale_conversions()
         ncnn.create_gpu_instance()
-        count = int(ncnn.get_gpu_count())
-        if count < 1:
-            raise RuntimeError("no Vulkan device found (check Mesa/RADV drivers)")
-        index = GPU_INDEX
-        if index < 0:
-            index = int(ncnn.get_default_gpu_index())
-        if index < 0 or index >= count:
-            index = 0
+        self.gpu_instance_created = True
+        try:
+            count = int(ncnn.get_gpu_count())
+            if count < 1:
+                raise RuntimeError("no Vulkan device found (check Mesa/RADV drivers)")
+            index = GPU_INDEX
+            if index < 0:
+                index = int(ncnn.get_default_gpu_index())
+            if index < 0 or index >= count:
+                index = 0
+        except Exception:
+            ncnn.destroy_gpu_instance()
+            self.gpu_instance_created = False
+            raise
         self.gpu_index = index
         self.gpu_ready = True
         LOG.info(
@@ -710,6 +763,11 @@ class FrigateZMQServer:
         try:
             self.model = self._build_model(name, path)
             return True
+        except BackendUnavailable:
+            # No inference backend at all is fatal; do not pretend to be healthy
+            # and answer inference requests with zeros.
+            self.model = None
+            raise
         except Exception:
             LOG.exception(
                 "Failed to load cached model %s (backend error); leaving the file in place", path
@@ -901,13 +959,16 @@ class FrigateZMQServer:
             # ncnn requires every Net to be destroyed before the Vulkan instance.
             self.model = None
             gc.collect()
-            if self.gpu_ready:
+            if self.gpu_instance_created:
                 try:
                     import ncnn
 
                     ncnn.destroy_gpu_instance()
                 except Exception:
                     LOG.exception("Could not destroy the Vulkan instance")
+                finally:
+                    self.gpu_instance_created = False
+                    self.gpu_ready = False
             LOG.info("Server stopped")
 
 
@@ -933,6 +994,9 @@ def main() -> int:
         server = FrigateZMQServer()
         server.run()
         return 0
+    except BackendUnavailable as exc:
+        LOG.error("Fatal: %s", exc)
+        return 2
     except Exception:
         LOG.exception("Fatal server error")
         return 1
