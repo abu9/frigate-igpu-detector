@@ -227,6 +227,62 @@ Running `fzd` without a subcommand prints help; start the server explicitly with
 `fzd bench` writes ncnn conversion files; run it as the service user to keep cache ownership
 consistent.
 
+## Monitoring
+
+Set `FRIGATE_ZMQ_STATUS_BIND` to enable a read-only HTTP status endpoint:
+
+```ini
+Environment=FRIGATE_ZMQ_STATUS_BIND=0.0.0.0:9180
+```
+
+Then:
+
+```bash
+curl -s http://127.0.0.1:9180/status | python3 -m json.tool
+```
+
+The response contains backend/model state, live CPU/GPU/memory, and inference latency:
+
+```json
+{
+  "version": "0.2.0",
+  "backend": {"configured": "ncnn-vulkan", "active": "ncnn-vulkan", "fallback": false},
+  "model": {"name": "yolov9-m-320.onnx", "loaded": true, "available": true},
+  "live": {
+    "cpu_percent": 2.2,
+    "cpu_cores": 0.022,
+    "gpu_busy_percent": 41,
+    "cgroup_memory_bytes": 116000000,
+    "resident_memory_bytes": 206000000
+  },
+  "inference": {
+    "requests_total": 12345,
+    "errors_total": 0,
+    "rejected_total": 0,
+    "last_ms": 44.1,
+    "p50_ms": 43.9,
+    "p95_ms": 71.2,
+    "window": 300
+  }
+}
+```
+
+`cpu_percent` is process CPU usage where 100 means one full core. Inference latency is measured
+around the model call (forward + post-processing), excluding ZMQ transport.
+
+For Uptime Kuma, monitor `http://HOST:9180/status` with expected status 200 and the keyword
+`"loaded":true` (or `"loaded":true` plus `"active":"ncnn-vulkan"`). For a status-code-only monitor,
+use:
+
+```text
+http://HOST:9180/status?require_model=1
+```
+
+which returns 503 while no model is loaded.
+
+The endpoint has no authentication. Bind it to localhost, or to a trusted LAN address with a
+firewall rule. It exposes no model contents or secrets.
+
 ## Proxmox LXC
 
 Proxmox VE 8.2 and later provides device passthrough for containers. Run the following on the
@@ -280,6 +336,7 @@ All settings are environment variables, read once at process start.
 | `FRIGATE_ZMQ_GPU_INDEX` | `-1` | Vulkan device index; `-1` uses the ncnn default |
 | `FRIGATE_ZMQ_PNNX` | auto-detected | Path to the pnnx executable |
 | `FRIGATE_ZMQ_MAX_MODEL_MB` | `512` | Maximum accepted ONNX upload |
+| `FRIGATE_ZMQ_STATUS_BIND` | empty (disabled) | `host:port` for the read-only `/status` endpoint, e.g. `127.0.0.1:9180` |
 | `FRIGATE_ZMQ_LOG_LEVEL` | `INFO` | Python logging level |
 
 `fzd doctor` reads the systemd unit's effective environment first (the unit name can be

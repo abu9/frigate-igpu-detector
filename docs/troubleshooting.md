@@ -48,6 +48,24 @@ systemctl status frigate-igpu-detector
 journalctl -u frigate-igpu-detector -n 50 --no-pager -o cat
 ```
 
+## `/status` is not reachable
+
+Check that the endpoint is enabled:
+
+```ini
+Environment=FRIGATE_ZMQ_STATUS_BIND=0.0.0.0:9180
+```
+
+Then verify the listener and the service log:
+
+```bash
+ss -ltnp | grep 9180
+journalctl -u frigate-igpu-detector -n 50 --no-pager -o cat | grep -i status
+```
+
+`curl http://127.0.0.1:9180/status?require_model=1` returns 503 while no model is loaded.
+If the port is already in use, the endpoint is disabled with a warning; detection continues.
+
 ## Only `llvmpipe` is visible / warmup takes tens of seconds
 
 `llvmpipe` is Mesa's CPU rasteriser. ncnn will happily use it and be ~20× slower.

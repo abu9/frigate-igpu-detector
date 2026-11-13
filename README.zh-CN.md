@@ -218,6 +218,60 @@ fzd bench --model MODEL       # 延迟与 CPU 基准测试
 运行单元的环境，因此 SSH 登录后直接用 root 执行即可。`fzd bench` 会写入 ncnn 转换缓存，建议
 用服务用户执行，避免缓存文件属主变成 root。
 
+## 监控
+
+设置 `FRIGATE_ZMQ_STATUS_BIND` 可启用只读 HTTP 状态端点：
+
+```ini
+Environment=FRIGATE_ZMQ_STATUS_BIND=0.0.0.0:9180
+```
+
+然后：
+
+```bash
+curl -s http://127.0.0.1:9180/status | python3 -m json.tool
+```
+
+返回内容包括后端/模型状态、CPU/GPU/内存占用和推理延迟：
+
+```json
+{
+  "version": "0.2.0",
+  "backend": {"configured": "ncnn-vulkan", "active": "ncnn-vulkan", "fallback": false},
+  "model": {"name": "yolov9-m-320.onnx", "loaded": true, "available": true},
+  "live": {
+    "cpu_percent": 2.2,
+    "cpu_cores": 0.022,
+    "gpu_busy_percent": 41,
+    "cgroup_memory_bytes": 116000000,
+    "resident_memory_bytes": 206000000
+  },
+  "inference": {
+    "requests_total": 12345,
+    "errors_total": 0,
+    "rejected_total": 0,
+    "last_ms": 44.1,
+    "p50_ms": 43.9,
+    "p95_ms": 71.2,
+    "window": 300
+  }
+}
+```
+
+`cpu_percent` 是进程 CPU 使用率，100 表示占满一个核。推理延迟只统计模型前向和后处理，
+不包含 ZMQ 传输。
+
+Uptime Kuma 可监控 `http://HOST:9180/status`，期望状态码 200，关键字
+`"loaded":true`。如果只想根据状态码判断模型是否就绪，使用：
+
+```text
+http://HOST:9180/status?require_model=1
+```
+
+模型未加载时返回 503。
+
+端点没有认证。请绑定 localhost，或绑定可信内网地址并配置防火墙。它不会暴露模型内容或密钥。
+
 ## Proxmox LXC 配置
 
 Proxmox VE 8.2 及更高版本提供容器设备透传。在宿主机执行以下命令；示例使用容器 ID
@@ -269,6 +323,7 @@ Frigate 无需 GPU 访问权限，本服务也不需要摄像头视频流。
 | `FRIGATE_ZMQ_GPU_INDEX` | `-1` | Vulkan 设备序号；`-1` 使用 ncnn 默认值 |
 | `FRIGATE_ZMQ_PNNX` | 自动检测 | pnnx 可执行文件路径 |
 | `FRIGATE_ZMQ_MAX_MODEL_MB` | `512` | 允许接收的 ONNX 大小上限 |
+| `FRIGATE_ZMQ_STATUS_BIND` | 空（禁用） | 只读 `/status` HTTP 端点，例如 `127.0.0.1:9180` |
 | `FRIGATE_ZMQ_LOG_LEVEL` | `INFO` | Python 日志级别 |
 
 `fzd doctor` 会优先读取 systemd 单元的实际运行环境（单元名可用 `FRIGATE_ZMQ_UNIT` 覆盖，
