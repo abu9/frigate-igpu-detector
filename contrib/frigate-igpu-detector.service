@@ -3,6 +3,8 @@ Description=Frigate iGPU Detector (ZMQ remote inference)
 Documentation=https://github.com/abu9/frigate-igpu-detector
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -22,10 +24,12 @@ Environment=HOME=/var/lib/frigate-detector
 Environment=XDG_CACHE_HOME=/var/lib/frigate-detector/.cache
 
 # Adjust to your installation (venv or system-wide `fzd`).
+# Fails before binding the port when neither ncnn nor OpenVINO is usable.
+ExecStartPre=/opt/frigate-igpu-detector/venv/bin/fzd preflight
 ExecStart=/opt/frigate-igpu-detector/venv/bin/fzd serve
 
 Restart=on-failure
-RestartSec=3
+RestartSec=5
 TimeoutStopSec=10
 
 NoNewPrivileges=true

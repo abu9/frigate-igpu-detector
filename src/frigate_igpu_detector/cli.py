@@ -260,6 +260,102 @@ def _doctor() -> int:
     return 0
 
 
+def _preflight() -> int:
+    """Validate dependencies and configuration without starting the server.
+
+    This is intentionally lightweight: it imports the optional backends but does
+    not create a Vulkan instance. It is used as ``ExecStartPre`` so a missing
+    backend fails the unit before the ZMQ port is bound.
+    """
+    from . import server
+
+    deployed, config_source = _deployed_environment(_UNIT_NAME)
+    cfg = {**os.environ, **deployed}
+    backend = cfg.get("FRIGATE_ZMQ_BACKEND", server.BACKEND).strip().lower()
+    bind_value = cfg.get("FRIGATE_ZMQ_BIND", server.BIND)
+    model_dir = Path(cfg.get("FRIGATE_ZMQ_MODEL_DIR", str(server.MODEL_DIR)))
+
+    failures = 0
+    warnings = 0
+
+    if backend not in server.KNOWN_BACKENDS:
+        _fail("unsupported backend", f"{backend!r}; expected one of {server.KNOWN_BACKENDS}")
+        failures += 1
+    else:
+        _ok("backend", backend)
+
+    ncnn_ok = False
+    try:
+        import ncnn  # noqa: F401
+
+        ncnn_ok = True
+        _ok("ncnn")
+    except Exception as exc:
+        _fail("ncnn", f"{type(exc).__name__}: {exc}")
+
+    openvino_ok = False
+    try:
+        import openvino as ov
+
+        core = ov.Core()
+        if "CPU" not in core.available_devices:
+            raise RuntimeError(f"CPU plugin unavailable: {core.available_devices}")
+        openvino_ok = True
+        _ok("openvino", "CPU plugin")
+    except Exception as exc:
+        _fail("openvino", f"{type(exc).__name__}: {exc}")
+
+    if backend == "openvino":
+        if not openvino_ok:
+            failures += 1
+    elif backend == "ncnn-vulkan":
+        if ncnn_ok:
+            pass
+        elif openvino_ok:
+            _warn("ncnn missing; the server will use the OpenVINO CPU fallback")
+            warnings += 1
+        else:
+            failures += 1
+    else:
+        # Unknown backend already counted above.
+        pass
+
+    bind = _parse_bind(bind_value)
+    if bind is None:
+        _fail("invalid FRIGATE_ZMQ_BIND", bind_value)
+        failures += 1
+    else:
+        _ok("bind", bind_value)
+
+    if model_dir.is_dir():
+        if os.access(model_dir, os.W_OK):
+            _ok("model directory writable", str(model_dir))
+        else:
+            _warn("model directory is not writable", str(model_dir))
+            warnings += 1
+    else:
+        parent = model_dir.parent
+        if parent.is_dir() and os.access(parent, os.W_OK):
+            _warn("model directory does not exist yet", str(model_dir))
+            warnings += 1
+        else:
+            _fail("model directory cannot be created", str(model_dir))
+            failures += 1
+
+    if not ncnn_ok or not openvino_ok:
+        print(
+            "hint: if ncnn/OpenVINO are installed system-wide, confirm "
+            "'include-system-site-packages = true' in the venv's pyvenv.cfg"
+        )
+
+    print(f"config: {config_source}")
+    if failures:
+        print(f"preflight failed: {failures} required check(s) failed")
+        return 1
+    print("preflight passed" + (f" ({warnings} warning(s))" if warnings else ""))
+    return 0
+
+
 def _bench(args: argparse.Namespace) -> int:
     import numpy as np
 
@@ -357,6 +453,9 @@ def main(argv: list[str] | None = None) -> int:
 
     subparsers.add_parser("serve", help="run the ZMQ detector server (default)")
     subparsers.add_parser("doctor", help="check GPU, drivers, pnnx and model cache")
+    subparsers.add_parser(
+        "preflight", help="validate runtime dependencies before starting the server"
+    )
 
     bench = subparsers.add_parser("bench", help="benchmark a local ONNX model")
     bench.add_argument("--model", required=True, help="path to a YOLO ONNX model")
@@ -368,6 +467,46 @@ def main(argv: list[str] | None = None) -> int:
         help="where to keep converted ncnn models (default: <model dir>/ncnn)",
     )
 
+    status_parser = subparsers.add_parser(
+        "status", help="show service, backend, model and live GPU status"
+    )
+    status_parser.add_argument("--unit", default=None, help="systemd unit name")
+    status_parser.add_argument("--endpoint", default=None, help="ZMQ endpoint override")
+    status_parser.add_argument("--model", default=None, help="ONNX model for --probe")
+    status_parser.add_argument("--image", default=None, help="image for --probe")
+    status_parser.add_argument("--crop", default=None, help="probe crop x1,y1,x2,y2")
+    status_parser.add_argument("--runs", type=int, default=5, help="probe inference runs")
+    status_parser.add_argument(
+        "--timeout", type=int, default=10000, help="probe inference timeout in ms"
+    )
+    status_parser.add_argument(
+        "--model-timeout", type=int, default=180000, help="model transfer timeout in ms"
+    )
+    status_parser.add_argument(
+        "--sample-seconds", type=float, default=5.0, help="live CPU sample interval"
+    )
+    status_parser.add_argument("--quick", action="store_true", help="skip live CPU sampling")
+    status_parser.add_argument("--probe", action="store_true", help="run an inference probe")
+    status_parser.add_argument("--json", action="store_true", help="emit JSON")
+    status_parser.add_argument("--check", action="store_true", help="exit 1 when unhealthy")
+    status_parser.add_argument(
+        "--require-model", action="store_true", help="fail --check when no model is loaded"
+    )
+    status_parser.add_argument("--quiet", action="store_true", help="suppress human output")
+
+    probe_parser = subparsers.add_parser(
+        "probe", help="run a local ZMQ protocol and inference probe"
+    )
+    probe_parser.add_argument("--endpoint", default="tcp://127.0.0.1:5555")
+    probe_parser.add_argument("--model", required=True, help="path to the ONNX model")
+    probe_parser.add_argument("--model-name", default=None)
+    probe_parser.add_argument("--image", default=None)
+    probe_parser.add_argument("--crop", default=None, help="crop x1,y1,x2,y2")
+    probe_parser.add_argument("--runs", type=int, default=20)
+    probe_parser.add_argument("--timeout", type=int, default=10000)
+    probe_parser.add_argument("--model-timeout", type=int, default=180000)
+    probe_parser.add_argument("--json", action="store_true")
+
     args = parser.parse_args(argv)
     if args.command in (None, "serve"):
         from .server import main as serve
@@ -375,7 +514,17 @@ def main(argv: list[str] | None = None) -> int:
         return serve()
     if args.command == "doctor":
         return _doctor()
+    if args.command == "preflight":
+        return _preflight()
     if args.command == "bench":
         return _bench(args)
+    if args.command == "status":
+        from .status import main as status_main
+
+        return status_main(args)
+    if args.command == "probe":
+        from .probe import main as probe_main
+
+        return probe_main(args)
     parser.print_help()
     return 2
