@@ -3,8 +3,49 @@
 Start with:
 
 ```bash
+fzd preflight
 fzd doctor
+fzd status
 journalctl -u frigate-igpu-detector -n 100 --no-pager -o cat
+```
+
+## `ModuleNotFoundError: No module named 'ncnn'` (or `openvino`) after a restart
+
+The service is probably using a virtualenv that no longer inherits the system site packages.
+This commonly happens after running `python3 -m venv venv` again on an existing deployment:
+that command rewrites `pyvenv.cfg` and resets `include-system-site-packages` to `false`.
+
+Check and repair:
+
+```bash
+grep '^include-system-site-packages' \
+  /opt/frigate-igpu-detector/venv/pyvenv.cfg
+
+sed -i 's/^include-system-site-packages = .*/include-system-site-packages = true/' \
+  /opt/frigate-igpu-detector/venv/pyvenv.cfg
+
+systemctl restart frigate-igpu-detector
+fzd preflight
+```
+
+If you install `ncnn` and OpenVINO inside the venv instead of using system packages, leave the
+flag at `false` and make sure both extras are installed in that venv.
+
+## Service is active but Frigate receives `no model is loaded`
+
+Run:
+
+```bash
+fzd status
+```
+
+The `backend / model` section shows the active backend and whether a model is loaded. If both
+`ncnn` and OpenVINO are unavailable, the current release exits at startup instead of listening
+and returning zero results. Check the unit state:
+
+```bash
+systemctl status frigate-igpu-detector
+journalctl -u frigate-igpu-detector -n 50 --no-pager -o cat
 ```
 
 ## Only `llvmpipe` is visible / warmup takes tens of seconds
@@ -112,7 +153,9 @@ Pause transcoding or other GPU workloads, or lower the detection load in Frigate
 ## Collecting a useful bug report
 
 ```bash
+fzd preflight > preflight.txt 2>&1
 fzd doctor > doctor.txt 2>&1
+fzd status --json > status.json 2>&1
 fzd bench --model /path/to/model.onnx --runs 100 > bench.txt 2>&1
 journalctl -u frigate-igpu-detector -n 200 --no-pager -o cat > log.txt
 vulkaninfo --summary > vulkan.txt 2>&1

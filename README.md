@@ -45,8 +45,10 @@ This project uses the Vulkan compute path instead:
   cached by content hash under `models/ncnn/`.
 - **Restart-safe.** The newest cached model is loaded at startup, because Frigate sends the model
   only during its own startup.
-- **Operational tooling.** `fzd doctor` validates the render node, group mapping, Vulkan device,
-  ncnn, pnnx, and model cache. `fzd bench` reports p50/p95 latency and CPU per inference.
+- **Operational tooling.** `fzd preflight` validates runtime dependencies before startup;
+  `fzd doctor` validates the render node, group mapping, Vulkan device, ncnn, pnnx, and model
+  cache; `fzd status` shows the live service, backend, model, GPU load, and optional inference
+  probe; `fzd bench` reports p50/p95 latency and CPU per inference.
 
 ## Architecture
 
@@ -143,11 +145,28 @@ git clone https://github.com/abu9/frigate-igpu-detector.git /opt/frigate-igpu-de
 cd /opt/frigate-igpu-detector
 python3 -m venv venv
 venv/bin/pip install '.[ncnn,openvino]'
-venv/bin/fzd --version
+
+# Make the CLI available after SSH login:
+ln -sfn /opt/frigate-igpu-detector/venv/bin/fzd /usr/local/bin/fzd
+fzd --version
 ```
 
 `openvino` is optional and only needed for the CPU fallback. Without it, the server still runs
 on `ncnn-vulkan`.
+
+If you intentionally use system-wide `ncnn` and OpenVINO instead of the extras, create the
+virtualenv with system packages and confirm the setting:
+
+```bash
+python3 -m venv --system-site-packages venv
+grep '^include-system-site-packages' venv/pyvenv.cfg
+# include-system-site-packages = true
+venv/bin/pip install .
+```
+
+Do not run `python3 -m venv venv` again on an existing production virtualenv: it rewrites
+`pyvenv.cfg` and resets `include-system-site-packages` to `false`. That makes the service lose
+access to system `ncnn`/OpenVINO after the next restart.
 
 ### 4. Install the systemd unit
 
@@ -164,7 +183,9 @@ Review the unit before starting it; the defaults assume the user, paths, and ven
 ### 5. Verify
 
 ```bash
-venv/bin/fzd doctor
+fzd preflight
+fzd doctor
+fzd status
 ```
 
 A healthy installation reports a real Vulkan device, not `llvmpipe`:
@@ -187,6 +208,23 @@ git pull
 venv/bin/pip install --force-reinstall --no-deps .
 systemctl restart frigate-igpu-detector
 ```
+
+## Command line
+
+```bash
+fzd preflight                 # dependency/config check used by systemd
+fzd doctor                    # GPU, Vulkan, ncnn, pnnx and model-cache check
+fzd status                    # running service, backend, model and GPU load
+fzd status --json             # machine-readable status
+fzd status --check            # exit 1 when the service is unhealthy
+fzd status --probe            # status plus a real ZMQ inference probe
+fzd probe --model MODEL       # standalone protocol/inference probe
+fzd bench --model MODEL       # latency and CPU benchmark
+```
+
+`fzd status` reads the running unit's environment, so it is safe to run as root after SSH login.
+`fzd bench` writes ncnn conversion files; run it as the service user to keep cache ownership
+consistent.
 
 ## Proxmox LXC
 
@@ -327,6 +365,8 @@ See [docs/backends.md](docs/backends.md) for details.
 | Symptom | Cause |
 | --- | --- |
 | `fzd doctor` shows only `llvmpipe` | render node not accessible: wrong GID, missing `render` group, or missing `mesa-vulkan-drivers` |
+| `ModuleNotFoundError: No module named 'ncnn'` after a restart | the venv no longer inherits system site packages; check `include-system-site-packages` in `venv/pyvenv.cfg` |
+| Unit fails with `no usable inference backend` | neither ncnn nor OpenVINO is importable; run `fzd preflight` for the exact cause |
 | Log says `OpenVINO CPU` while `ncnn-vulkan` is configured | Vulkan initialisation failed; the preceding log line has the reason |
 | Service aborts with `Address family not supported` | `RestrictAddressFamilies` is missing `AF_NETLINK` |
 | Detections are all zero after a restart | the model directory is not persistent, so autoload found no model |

@@ -39,8 +39,9 @@ OpenVINO 的 GPU 插件仅支持 Intel，AMD 核显只能退回 CPU 推理。
 - **自动回退。** GPU 不可用时记录原因并切换 OpenVINO，不会直接失败。
 - **模型只转换一次。** Frigate 传来的 ONNX 由 pnnx 转换，按内容哈希缓存在 `models/ncnn/`。
 - **重启安全。** 启动时加载最新的缓存模型；Frigate 仅在自己启动时发送一次模型。
-- **运维工具。** `fzd doctor` 检查 render 节点、组映射、Vulkan 设备、ncnn、pnnx 与模型缓存；
-  `fzd bench` 输出 p50/p95 延迟和单次推理 CPU。
+- **运维工具。** `fzd preflight` 在启动前检查运行时依赖；`fzd doctor` 检查 render 节点、组映射、
+  Vulkan 设备、ncnn、pnnx 与模型缓存；`fzd status` 查看服务、后端、模型、GPU 负载，并可选执行
+  端到端推理探测；`fzd bench` 输出 p50/p95 延迟和单次推理 CPU。
 
 ## 架构
 
@@ -136,10 +137,27 @@ git clone https://github.com/abu9/frigate-igpu-detector.git /opt/frigate-igpu-de
 cd /opt/frigate-igpu-detector
 python3 -m venv venv
 venv/bin/pip install '.[ncnn,openvino]'
-venv/bin/fzd --version
+
+# SSH 登录后直接使用 fzd：
+ln -sfn /opt/frigate-igpu-detector/venv/bin/fzd /usr/local/bin/fzd
+fzd --version
 ```
 
 `openvino` 为可选依赖，仅用于 CPU 回退。未安装时服务仍可在 `ncnn-vulkan` 上运行。
+
+如果 `ncnn` 和 OpenVINO 使用系统包，而不是安装到 venv，则需要用系统站点包创建虚拟环境，
+并确认开关为 `true`：
+
+```bash
+python3 -m venv --system-site-packages venv
+grep '^include-system-site-packages' venv/pyvenv.cfg
+# include-system-site-packages = true
+venv/bin/pip install .
+```
+
+不要在已投入使用的 venv 上再次执行 `python3 -m venv venv`。该命令会重写 `pyvenv.cfg`，把
+`include-system-site-packages` 重置为 `false`，导致服务下次重启后看不到系统的
+`ncnn`/OpenVINO。
 
 ### 4. 安装 systemd 单元
 
@@ -157,7 +175,9 @@ systemctl enable --now frigate-igpu-detector
 ### 5. 验证
 
 ```bash
-venv/bin/fzd doctor
+fzd preflight
+fzd doctor
+fzd status
 ```
 
 正常输出应显示真实的 Vulkan 设备，而不是 `llvmpipe`：
@@ -180,6 +200,22 @@ git pull
 venv/bin/pip install --force-reinstall --no-deps .
 systemctl restart frigate-igpu-detector
 ```
+
+## 命令行
+
+```bash
+fzd preflight                 # systemd 启动前的依赖和配置检查
+fzd doctor                    # GPU、Vulkan、ncnn、pnnx 与模型缓存检查
+fzd status                    # 服务、后端、模型与 GPU 负载
+fzd status --json             # 机器可读状态
+fzd status --check            # 不健康时返回 1
+fzd status --probe            # 状态加真实 ZMQ 推理探测
+fzd probe --model MODEL       # 独立协议/推理探测
+fzd bench --model MODEL       # 延迟与 CPU 基准测试
+```
+
+`fzd status` 会读取正在运行单元的环境，因此 SSH 登录后直接用 root 执行即可。`fzd bench` 会写入
+ncnn 转换缓存，建议用服务用户执行，避免缓存文件属主变成 root。
 
 ## Proxmox LXC 配置
 
@@ -311,6 +347,8 @@ journalctl -u frigate-igpu-detector -n 20 -o cat      # 当前后端
 | 现象 | 原因 |
 | --- | --- |
 | `fzd doctor` 只能看到 `llvmpipe` | render 节点不可访问：GID 错误、用户不在 `render` 组，或未安装 `mesa-vulkan-drivers` |
+| 重启后报 `ModuleNotFoundError: No module named 'ncnn'` | venv 不再继承系统站点包；检查 `venv/pyvenv.cfg` 的 `include-system-site-packages` |
+| 服务失败并报 `no usable inference backend` | ncnn 和 OpenVINO 都不可导入；运行 `fzd preflight` 查看具体原因 |
 | 配置为 `ncnn-vulkan`，日志却显示 `OpenVINO CPU` | Vulkan 初始化失败，上一行日志包含原因 |
 | 服务报 `Address family not supported` 后中止 | `RestrictAddressFamilies` 缺少 `AF_NETLINK` |
 | 重启后检测结果全为零 | 模型目录未持久化，启动时没有可加载的缓存模型 |

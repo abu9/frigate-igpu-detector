@@ -153,6 +153,42 @@ SupplementaryGroups=render
 Alternatively, make the container's `render` GID match the device node's GID (the `dev0`
 method with `gid=` does this for you) and skip the group membership.
 
+## Virtualenv and CLI
+
+The project supports two layouts:
+
+- **Self-contained venv:** install the extras into the venv with
+  `pip install '.[ncnn,openvino]'`. `include-system-site-packages = false` is expected.
+- **System ncnn/OpenVINO:** create the venv with `--system-site-packages` and keep
+  `include-system-site-packages = true`. This is the layout used by the reference deployment.
+
+```bash
+cd /opt/frigate-igpu-detector
+
+# System-package layout:
+python3 -m venv --system-site-packages venv
+grep '^include-system-site-packages' venv/pyvenv.cfg   # must be true
+venv/bin/pip install .
+
+# Make fzd available after SSH login:
+ln -sfn /opt/frigate-igpu-detector/venv/bin/fzd /usr/local/bin/fzd
+fzd --version
+```
+
+Do not run `python3 -m venv venv` again on an existing production venv: it rewrites
+`pyvenv.cfg` and sets `include-system-site-packages` back to `false`, which removes access to
+system `ncnn`/OpenVINO on the next restart.
+
+`fzd preflight`, `fzd doctor`, and `fzd status` can run as root; `fzd bench` writes to the ncnn
+cache and should run as the service user:
+
+```bash
+runuser -u frigate-detector -- \
+  env HOME=/var/lib/frigate-detector \
+      XDG_CACHE_HOME=/var/lib/frigate-detector/.cache \
+      fzd bench --model /var/lib/frigate-detector/models/model.onnx --runs 50
+```
+
 ## Sharing the iGPU
 
 Multiple containers can share `renderD128`; the GPU is time-sliced. Keep an eye on:
