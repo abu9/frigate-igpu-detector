@@ -222,6 +222,7 @@ fzd probe --model MODEL       # standalone protocol/inference probe
 fzd bench --model MODEL       # latency and CPU benchmark
 ```
 
+Running `fzd` without a subcommand prints help; start the server explicitly with `fzd serve`.
 `fzd status` reads the running unit's environment, so it is safe to run as root after SSH login.
 `fzd bench` writes ncnn conversion files; run it as the service user to keep cache ownership
 consistent.

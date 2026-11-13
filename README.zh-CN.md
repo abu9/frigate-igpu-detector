@@ -214,8 +214,9 @@ fzd probe --model MODEL       # 独立协议/推理探测
 fzd bench --model MODEL       # 延迟与 CPU 基准测试
 ```
 
-`fzd status` 会读取正在运行单元的环境，因此 SSH 登录后直接用 root 执行即可。`fzd bench` 会写入
-ncnn 转换缓存，建议用服务用户执行，避免缓存文件属主变成 root。
+不带子命令运行 `fzd` 只显示帮助；启动服务必须显式执行 `fzd serve`。`fzd status` 会读取正在
+运行单元的环境，因此 SSH 登录后直接用 root 执行即可。`fzd bench` 会写入 ncnn 转换缓存，建议
+用服务用户执行，避免缓存文件属主变成 root。
 
 ## Proxmox LXC 配置
 
