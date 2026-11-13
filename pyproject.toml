@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "frigate-igpu-detector"
-version = "0.1.1"
+version = "0.1.2"
 description = "Frigate ZMQ remote detector with ncnn/Vulkan GPU inference for AMD iGPUs and OpenVINO CPU fallback"
 readme = "README.md"
 requires-python = ">=3.10"

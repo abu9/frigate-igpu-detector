@@ -3,6 +3,13 @@
 All notable changes to this project are documented here. The format loosely follows
 [Keep a Changelog](https://keepachangelog.com/), and the project uses semantic versioning.
 
+## [0.1.2] - 2026-11-13
+
+### Fixed
+
+- Running `fzd` without a subcommand now prints help instead of accidentally starting a
+  second server and failing with `Address already in use`.
+
 ## [0.1.1] - 2026-11-13
 
 ### Fixed
