@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+
+# Models and media (never commit camera frames or model weights)
+*.onnx
+*.pt
+*.ncnn.param
+*.ncnn.bin
+models/
+frames/
+*.jpg
+*.jpeg
+*.png
+*.mp4
+*.mkv
+
+# ...but allow documentation assets
+!docs/assets/
+!docs/assets/**
+
+# Local config and secrets
+.env
+*.local

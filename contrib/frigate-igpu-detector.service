@@ -1,0 +1,41 @@
+[Unit]
+Description=Frigate iGPU Detector (ZMQ remote inference)
+Documentation=https://github.com/abu9/frigate-igpu-detector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=frigate-detector
+Group=frigate-detector
+
+# Vulkan compute needs the render node, not /dev/kfd and not card0.
+SupplementaryGroups=render
+
+Environment=FRIGATE_ZMQ_BIND=tcp://0.0.0.0:5555
+Environment=FRIGATE_ZMQ_MODEL_DIR=/var/lib/frigate-detector/models
+Environment=FRIGATE_ZMQ_BACKEND=ncnn-vulkan
+Environment=FRIGATE_ZMQ_NCNN_THREADS=1
+Environment=FRIGATE_ZMQ_CPU_THREADS=6
+Environment=FRIGATE_ZMQ_LOG_LEVEL=INFO
+Environment=HOME=/var/lib/frigate-detector
+Environment=XDG_CACHE_HOME=/var/lib/frigate-detector/.cache
+
+# Adjust to your installation (venv or system-wide `fzd`).
+ExecStart=/opt/frigate-igpu-detector/venv/bin/fzd serve
+
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=10
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/frigate-detector
+# AF_NETLINK is required by ZeroMQ's address resolution.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

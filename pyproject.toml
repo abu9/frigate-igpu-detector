@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "frigate-igpu-detector"
+version = "0.1.0"
+description = "Frigate ZMQ remote detector with ncnn/Vulkan GPU inference for AMD iGPUs and OpenVINO CPU fallback"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "frigate-igpu-detector contributors" }]
+keywords = ["frigate", "zmq", "object-detection", "yolo", "vulkan", "ncnn", "igpu", "amd-gpu", "proxmox", "lxc", "nvr"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: No Input/Output (Daemon)",
+  "Intended Audience :: End Users/Desktop",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Multimedia :: Video",
+]
+dependencies = [
+  "numpy>=1.24",
+  "onnx>=1.15",
+  "opencv-python-headless>=4.8",
+  "pyzmq>=25",
+]
+
+[project.optional-dependencies]
+openvino = ["openvino>=2024.0"]
+ncnn = ["ncnn>=1.0.2024"]
+dev = ["pytest>=8", "ruff>=0.5"]
+
+[project.scripts]
+fzd = "frigate_igpu_detector.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/abu9/frigate-igpu-detector"
+Issues = "https://github.com/abu9/frigate-igpu-detector/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

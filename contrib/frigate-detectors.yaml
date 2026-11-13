@@ -1,0 +1,31 @@
+# Example Frigate configuration for frigate-igpu-detector.
+#
+# Replace the endpoint with the IP of the LXC/VM running the sidecar, and keep
+# `model` identical to the ONNX file you want to run. Frigate sends the model
+# bytes to the sidecar over ZMQ on startup; the sidecar converts them once.
+
+detectors:
+  igpu:
+    type: zmq
+    endpoint: tcp://192.168.1.50:5555
+    request_timeout_ms: 1000
+    linger_ms: 0
+
+model:
+  path: /config/yolov9-m-320.onnx
+  labelmap_path: /labelmap/coco-80.txt
+  width: 320
+  height: 320
+  input_tensor: nchw
+  input_pixel_format: rgb
+  input_dtype: float
+  model_type: yolo-generic
+
+# Optional: reduce detection load. Each extra region is a full inference.
+# cameras:
+#   front:
+#     detect:
+#       fps: 5
+#     motion:
+#       threshold: 30
+#       contour_area: 20
