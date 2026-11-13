@@ -18,6 +18,13 @@ def test_parse_proc_environ():
     assert _parse_proc_environ(raw) == {"A": "1", "B": "two", "C": "x=y"}
 
 
+def test_no_subcommand_prints_help(capsys):
+    assert cli.main([]) == 0
+    output = capsys.readouterr().out
+    assert "usage: fzd" in output
+    assert "fzd serve" in output
+
+
 def test_preflight_fails_without_any_backend(monkeypatch, tmp_path, capsys):
     real_import = builtins.__import__
 

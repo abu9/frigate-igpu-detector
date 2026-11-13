@@ -451,7 +451,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     subparsers = parser.add_subparsers(dest="command")
 
-    subparsers.add_parser("serve", help="run the ZMQ detector server (default)")
+    subparsers.add_parser("serve", help="run the ZMQ detector server")
     subparsers.add_parser("doctor", help="check GPU, drivers, pnnx and model cache")
     subparsers.add_parser(
         "preflight", help="validate runtime dependencies before starting the server"
@@ -508,7 +508,13 @@ def main(argv: list[str] | None = None) -> int:
     probe_parser.add_argument("--json", action="store_true")
 
     args = parser.parse_args(argv)
-    if args.command in (None, "serve"):
+    if args.command is None:
+        # Starting a second server by accident is worse than showing help: the
+        # production instance is managed by systemd and already owns the port.
+        parser.print_help()
+        print("\nUse `fzd serve` explicitly, or `fzd status` to inspect the running service.")
+        return 0
+    if args.command == "serve":
         from .server import main as serve
 
         return serve()
