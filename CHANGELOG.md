@@ -3,6 +3,27 @@
 All notable changes to this project are documented here. The format loosely follows
 [Keep a Changelog](https://keepachangelog.com/), and the project uses semantic versioning.
 
+## [0.1.1] - 2026-11-13
+
+### Fixed
+
+- Exit with a clear error when neither ncnn nor OpenVINO is usable, instead of staying active
+  and rejecting every inference request with `no model is loaded`.
+- Detect missing system site packages at startup and during `fzd preflight`.
+- Clean up a partially initialised Vulkan instance when GPU setup fails.
+
+### Added
+
+- `fzd preflight` for systemd `ExecStartPre` and manual dependency checks.
+- `fzd status` with human-readable output, `--json`, `--check`, `--probe` and `--require-model`.
+- `fzd probe` for standalone ZMQ model-transfer and inference testing.
+- systemd start limits and preflight integration in the unit template.
+
+### Changed
+
+- `fzd` can be installed on `PATH` via a symlink; the installation guide shows the step.
+- Documentation covers `include-system-site-packages`, venv recreation pitfalls and the new CLI.
+
 ## [0.1.0] - 2026-11-13
 
 ### Added
